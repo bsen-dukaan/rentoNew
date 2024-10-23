@@ -2,438 +2,41 @@ import { Hono } from "https://deno.land/x/hono@v4.3.11/mod.ts";
 
 const app = new Hono();
 
-const baseurl = "https://k8s-node.rentomojo.com";
-
-app.get("/api/getKYCData", async (c) => {
-  const token = c.req.query("token");
-  if (!token) {
-    return c.json({ error: "Token is required" }, 400);
-  }
-
+// Escalation
+app.post("/api/escalation", async (c: any) => {
   try {
-    const response = await fetch(
-      baseurl + "/api/Hyperverges/completionStatusV3",
-      {
-        headers: {
-          accept: "application/json, text/plain, */*",
-          "accept-language": "en-GB,en-US;q=0.9,en;q=0.8,hi;q=0.7",
-          authorization: token,
-        },
-      }
-    );
+    const body = await c.req.json();
 
-    if (!response.ok) {
-      console.log(response);
-      return c.json({ error: "Failed to fetch data" }, 500);
+    if (!body) {
+      return c.json({ error: "Body is required" }, 400);
     }
 
-    const text = await response.text();
-
-    try {
-      const data = JSON.parse(text);
-      const {
-        stepsCompleted,
-        totalSteps,
-        currentDocument,
-        evalResponse,
-        lastUpdatedAt,
-        professionType,
-      } = data;
-      let normalizedStatus = evalResponse.normalizedStatus;
-      let statusMap = evalResponse.statusMap;
-
-      const getStatusText = (statusMap, normalizedStatus) => {
-        for (let key in statusMap) {
-          if (statusMap[key].value === normalizedStatus) {
-            return statusMap[key].key;
-          }
-        }
-        return null;
-      };
-
-      const professionTypeMapping = {
-        100: "Working Professional",
-        200: "Self Employed",
-        300: "Freelancer",
-        500: "Student",
-        1337: "Not selected profession",
-        null: "Not selected profession",
-      };
-
-      let statusText = getStatusText(statusMap, normalizedStatus);
-      let profession = professionTypeMapping[professionType];
-
-      return c.json({
-        stepsCompleted,
-        totalSteps,
-        lastUpdatedAt,
-        currentDocument,
-        kycStatus: statusText,
-        professionType: profession,
-      });
-    } catch (error) {
-      return c.json({ error: "Failed to parse JSON response" }, 500);
+    if (checkWorkingHours()) {
+      return await sendToSheety(c);
+    } else {
+      return await offlineHours(c);
     }
   } catch (error) {
-    return c.json({ error: "Request failed" }, 500);
+    console.error("Request failed:", error.message);
+    return c.json({ error: "Request failed", details: error.message }, 500);
   }
 });
 
-app.get("/api/isWorkingHours", (c) => {
-  // Get the current time in UTC and convert it to IST
+function checkWorkingHours(): boolean {
   const now = new Date();
-  const utcOffset = now.getTimezoneOffset(); // Get the UTC offset in minutes
-  const istOffset = 330; // IST is UTC+5:30, so 330 minutes ahead of UTC
-
-  // Convert current UTC time to IST
+  const utcOffset = now.getTimezoneOffset();
+  const istOffset = 330;
   const istTime = new Date(now.getTime() + (istOffset + utcOffset) * 60000);
 
-  // Define working hours: Monday to Friday, 9 AM to 5 PM IST
   const startHour = 9;
   const endHour = 20;
-  const day = istTime.getDay(); // Sunday - Saturday : 0 - 6
+  const day = istTime.getDay();
   const hour = istTime.getHours();
 
-  // Check if it is a weekday and within working hours
-  const isWorkingHours =
-    day >= 0 && day <= 6 && hour >= startHour && hour < endHour;
+  return day >= 0 && day <= 6 && hour >= startHour && hour < endHour;
+}
 
-  return c.json({ isWorkingHours });
-});
-
-app.get("/api/currentTimeIST", (c) => {
-  // Get the current time directly in IST
-  const nowIST = new Date().toLocaleString("en-US", {
-    timeZone: "Asia/Kolkata",
-  });
-
-  return c.json({ currentTimeIST: nowIST });
-});
-
-app.get("/api/getServiceRequest", async (c) => {
-  const token = c.req.query("token");
-  if (!token) {
-    return c.json({ error: "Token is required" }, 400);
-  }
-
-  try {
-    const response = await fetch(
-      baseurl +
-        "/api/Dashboards/getServiceRequest?query=%7B%22page%22:1,%22size%22:100%7D&activeStatus=active",
-      {
-        headers: {
-          accept: "application/json, text/plain, */*",
-          "accept-language": "en-GB,en-US;q=0.9,en;q=0.8,hi;q=0.7",
-          authorization: token,
-          "chat-app": "bot9",
-        },
-      }
-    );
-
-    if (!response.ok) {
-      console.log(response);
-      return c.json({ error: "Failed to fetch data" }, 500);
-    }
-
-    const text = await response.text();
-
-    try {
-      const data = JSON.parse(text);
-      const { results } = data;
-
-      const formattedResults = results.map((ticket) => ({
-        serviceRequestId: ticket.serviceRequestId,
-        createdAt: ticket.createdAt,
-        requestStatusLabel: ticket.requestStatus.label,
-        requestType: ticket.requestType.label,
-        isActive: ticket.isActive,
-        orderItems: ticket.orderItems.map((item) => ({
-          id: item.id,
-          uniqueId: item.uniqueId,
-          orderDate: item.orderDate,
-          scheduleDate: item.scheduledDate,
-          productName: item.productName,
-          address: item.address,
-          isMmp: item.isMmp,
-          warehouseName: item.warehouseName,
-        })),
-        requestTimeline: ticket.requestTimeline.map((timeline) => ({
-          customerLabel: timeline.customerLabel,
-          createdAt: timeline.createdAt,
-          driverData: timeline.driverData,
-          scheduledDate: timeline.scheduledDate,
-        })),
-        isTicketSchedulable: ticket.isTicketSchedulable,
-        isTicketreschedulable: ticket.isTicketreschedulable,
-      }));
-      return c.json({ results: formattedResults });
-    } catch (error) {
-      return c.json({ error: "Failed to parse JSON response" }, 500);
-    }
-  } catch (error) {
-    return c.json({ error: "Request failed" }, 500);
-  }
-});
-
-app.get("/api/getInactiveServiceRequest", async (c) => {
-  const token = c.req.query("token");
-  if (!token) {
-    return c.json({ error: "Token is required" }, 400);
-  }
-
-  try {
-    const response = await fetch(
-      baseurl +
-        "/api/Dashboards/getServiceRequest?query=%7B%22page%22%3A1%2C%22size%22%3A100%7D&activeStatus=inactive",
-      {
-        headers: {
-          accept: "application/json, text/plain, */*",
-          authorization: token,
-        },
-      }
-    );
-
-    if (!response.ok) {
-      console.log(response);
-      return c.json({ error: "Failed to fetch data" }, 500);
-    }
-
-    const text = await response.text();
-
-    try {
-      const data = JSON.parse(text);
-      const { results } = data;
-
-      const formattedResults = results.map((ticket) => ({
-        serviceRequestId: ticket.serviceRequestId,
-        createdAt: ticket.createdAt,
-        requestStatusLabel: ticket.requestStatus.label,
-        requestType: ticket.requestType.label,
-        isActive: ticket.isActive,
-        orderItems: ticket.orderItems.map((item) => ({
-          id: item.id,
-          uniqueId: item.uniqueId,
-          orderDate: item.orderDate,
-          scheduleDate: item.scheduledDate,
-          productName: item.productName,
-        })),
-        requestTimeline: ticket.requestTimeline.map((timeline) => ({
-          customerLabel: timeline.customerLabel,
-          createdAt: timeline.createdAt,
-          driverData: timeline.driverData,
-        })),
-        isTicketSchedulable: ticket.isTicketSchedulable,
-        isTicketreschedulable: ticket.isTicketreschedulable,
-      }));
-      return c.json({ results: formattedResults });
-    } catch (error) {
-      return c.json({ error: "Failed to parse JSON response" }, 500);
-    }
-  } catch (error) {
-    return c.json({ error: "Request failed" }, 500);
-  }
-});
-
-app.get("/api/fetchProducts", async (c) => {
-  const token = c.req.query("token");
-  if (!token) {
-    return c.json({ error: "Token is required" }, 400);
-  }
-
-  try {
-    const response = await fetch(
-      baseurl +
-        "/api/Dashboards/getServiceRequest?query=%7B%22page%22:1,%22size%22:100%7D&activeStatus=active",
-      {
-        headers: {
-          accept: "application/json, text/plain, */*",
-          "accept-language": "en-GB,en-US;q=0.9,en;q=0.8,hi;q=0.7",
-          authorization: token,
-        },
-      }
-    );
-
-    if (!response.ok) {
-      console.error("Failed to fetch data:", response.statusText);
-      return c.json({ error: "Failed to fetch data" }, 500);
-    }
-
-    const text = await response.text();
-
-    try {
-      const data = JSON.parse(text);
-
-      const carousel = data.results.map((product) => {
-        return {
-          button_label: "View Details",
-          button_target: `/product/${product.id}`,
-          description: `${product.name} - ${product.tenure}`,
-          image: product.thumbnail,
-          price: product.rentAmount,
-          product_url: `/product/${product.id}`,
-          title: product.name,
-        };
-      });
-
-      return c.json({
-        carousel: carousel,
-        important_notes: "These are your rented products.",
-        instruction: "Swipe to view all your rented products.",
-      });
-    } catch (error) {
-      console.error(
-        "Failed to parse JSON response:",
-        error.message,
-        "Response text:",
-        text
-      );
-      return c.json(
-        {
-          error: "Failed to parse JSON response",
-          details: error.message,
-        },
-        500
-      );
-    }
-  } catch (error) {
-    console.error("Request failed:", error.message);
-    return c.json({ error: "Request failed", details: error.message }, 500);
-  }
-});
-
-app.get("/api/getActiveProducts", async (c) => {
-  const token = c.req.query("token");
-  if (!token) {
-    return c.json({ error: "Token is required" }, 400);
-  }
-
-  try {
-    const response = await fetch(
-      baseurl + "/api/Dashboards/activeProductList",
-      {
-        headers: {
-          accept: "application/json, text/plain, */*",
-          "accept-language": "en-GB,en;q=0.9",
-          authorization: token,
-        },
-      }
-    );
-
-    if (!response.ok) {
-      console.log(response);
-      return c.json({ error: "Failed to fetch data" }, 500);
-    }
-
-    const text = await response.text();
-
-    try {
-      const data = JSON.parse(text);
-      return c.json({ results: data });
-    } catch (error) {
-      return c.json({ error: "Failed to parse JSON response" }, 500);
-    }
-  } catch (error) {
-    return c.json({ error: "Request failed" }, 500);
-  }
-});
-
-app.post("/api/getCssSlots", async (c) => {
-  const token = c.req.query("token");
-
-  if (!token) {
-    return c.json({ error: "Token is required" }, 400);
-  }
-
-  const body = await c.req.json();
-  const { orderUniqueId, requestType } = body;
-
-  if (!orderUniqueId || !requestType) {
-    return c.json({ error: "orderUniqueId and requestType are required" }, 400);
-  }
-
-  try {
-    const response = await fetch(baseurl + "/api/ServiceRequests/getCssSlots", {
-      method: "POST",
-      headers: {
-        authorization: token,
-        "Content-Type": "application/json",
-        "chat-app": "bot9",
-      },
-      body: JSON.stringify({
-        data: {
-          orderUniqueId: orderUniqueId,
-          requestType: requestType,
-        },
-      }),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.log("Failed to fetch data:", errorText);
-      return c.json({ error: "Failed to fetch data", details: errorText }, 500);
-    }
-
-    const text = await response.text();
-
-    try {
-      const data = JSON.parse(text);
-      return c.json({ results: data });
-    } catch (error) {
-      console.log("Failed to parse JSON response:", error.message);
-      return c.json(
-        { error: "Failed to parse JSON response", details: error.message },
-        500
-      );
-    }
-  } catch (error) {
-    console.log("Request failed:", error.message);
-    return c.json({ error: "Request failed", details: error.message }, 500);
-  }
-});
-
-app.post("/api/sendToSheetyold", async (c) => {
-  const body = await c.req.json();
-  console.log("sendToSheety", body);
-  if (!body) {
-    return c.json({ error: "Body is required" }, 400);
-  }
-
-  const { conversationId } = body;
-
-  if (!conversationId) {
-    return c.json({ error: "conversationId is required in the body" }, 400);
-  }
-
-  const chatUrl = `https://app.bot9.ai/inbox/${conversationId}?status=bot&search=`;
-
-  try {
-    const response = await fetch(
-      "https://api.sheety.co/011fae6ddb1f69495d3220937f85baff/stagingOfBot9Form/opsCallback",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        // Send the updated ChatUrl to Sheety
-        body: JSON.stringify({ opsCallback: { ...body, chatUrl: chatUrl } }),
-      }
-    );
-
-    if (!response.ok) {
-      console.error("Failed to send data to Sheety:", response.statusText);
-      return c.json({ error: "Failed to send data to Sheety" }, 500);
-    }
-
-    const responseData = await response.json();
-    console.log("sendToSheety done");
-    return c.json(responseData);
-  } catch (error) {
-    console.error("Request failed:", error.message);
-    return c.json({ error: "Request failed", details: error.message }, 500);
-  }
-});
-
-app.post("/api/sendToSheety", async (c) => {
+async function sendToSheety(c: any) {
   try {
     const body = await c.req.json();
     console.log("sendToSheety", body);
@@ -458,6 +61,43 @@ app.post("/api/sendToSheety", async (c) => {
         400
       );
     }
+
+    const assignmentResponse = await fetch(
+      `http://localhost:3006/api/conversation/assignToAgent`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ conversationId }),
+      }
+    );
+
+    const assignmentData = await assignmentResponse.json();
+
+    if (!assignmentResponse.ok) {
+      console.error("Failed to assign agent:", assignmentData.message);
+      return c.json(
+        {
+          error: "Failed to assign agent",
+          details: assignmentData.message,
+        },
+        assignmentResponse.status
+      );
+    }
+
+    if (!assignmentData.success) {
+      console.error("Assignment unsuccessful:", assignmentData.message);
+      return c.json(
+        {
+          error: "Assignment unsuccessful",
+          details: assignmentData.message,
+        },
+        400
+      );
+    }
+
+    console.log("Agent assignment successful:", assignmentData.message);
 
     const chatUrl = `https://app.bot9.ai/inbox/${conversationId}?status=bot&search=`;
 
@@ -578,6 +218,7 @@ app.post("/api/sendToSheety", async (c) => {
     } else {
       console.log("Service request not found, creating new entry in sheet...");
 
+      // Send the updated ChatUrl to Sheety
       const sheetyResponse = await fetch(
         "https://api.sheety.co/011fae6ddb1f69495d3220937f85baff/stagingRento/opsCallback",
         {
@@ -617,9 +258,9 @@ app.post("/api/sendToSheety", async (c) => {
     console.error("Request failed:", error.message);
     return c.json({ error: "Request failed", details: error.message }, 500);
   }
-});
+}
 
-app.post("/api/offlineHours", async (c) => {
+async function offlineHours(c: any) {
   const body = await c.req.json();
 
   if (!body) {
@@ -654,312 +295,73 @@ app.post("/api/offlineHours", async (c) => {
     }
 
     const responseData = await response.json();
+    console.log(responseData);
     return c.json(responseData);
   } catch (error) {
     console.error("Request failed:", error.message);
     return c.json({ error: "Request failed", details: error.message }, 500);
   }
-});
+}
 
-app.post("/api/commitmentSheet", async (c) => {
-  const body = await c.req.json();
+// Billing
+const baseurl = "https://k8s-node.rentomojo.com";
 
-  if (!body) {
-    return c.json({ error: "Body is required" }, 400);
+app.post("/api/billingAndPayments", async (c: any) => {
+  const token = c.req.query("token");
+  const operation = c.req.query("operation");
+
+  const { invoiceId, userId } = await c.req.json("invoiceId");
+
+  if (!token || !operation) {
+    return c.json({ error: "Token and operation is required" }, 400);
   }
 
   try {
-    const response = await fetch(
-      "https://api.sheety.co/011fae6ddb1f69495d3220937f85baff/mojo/otherEscalations",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ otherEscalation: body }),
-      }
-    );
+    switch (operation) {
+      case "getRentalDue":
+        return await getRentalDue(c, token);
+      case "pendingDues":
+        return await getPendingDues(c, token, userId);
+      case "getInvoices":
+        return await getInvoices(c, token);
+      case "getUserInvoice":
+        return await getUserInvoice(c, token, userId, invoiceId);
+      default:
+        return c.json({ error: "Invalid operation" }, 400);
+    }
+  } catch (error) {
+    console.error("Request failed:", error.message);
+    return c.json({ error: "Request failed", details: error.message }, 500);
+  }
+
+  async function getRentalDue(c: any, token: string) {
+    const response = await fetch(baseurl + "/api/Dashboards/dashboardData", {
+      headers: {
+        accept: "application/json, text/plain, */*",
+        authorization: token,
+      },
+    });
 
     if (!response.ok) {
-      console.error("Failed to send data to Sheety:", response.statusText);
-      return c.json({ error: "Failed to send data to Sheety" }, 500);
-    }
-
-    const responseData = await response.json();
-    return c.json(responseData);
-  } catch (error) {
-    console.error("Request failed:", error.message);
-    return c.json({ error: "Request failed", details: error.message }, 500);
-  }
-});
-
-app.post("/api/uploadFile", async (c) => {
-  const token = c.req.query("token");
-
-  if (!token) {
-    return c.json({ error: "Authorization token is required" }, 400);
-  }
-
-  const body = await c.req.json();
-  const { media1, media2, media3 } = body;
-
-  // Construct the imageUrls array based on provided images
-  const mediaUrls = [];
-  if (media1) mediaUrls.push(media1);
-  if (media2) mediaUrls.push(media2);
-  if (media3) mediaUrls.push(media3);
-
-  if (mediaUrls.length === 0) {
-    return c.json({ error: "At least one image URL is required" }, 400);
-  }
-
-  try {
-    // Prepare the data for the URL upload request
-    const payload = {
-      imageUrls: mediaUrls,
-    };
-
-    // Perform the upload
-    const uploadResponse = await fetch(
-      baseurl + "/api/ServiceRequestImages/urlUpload",
-      {
-        method: "POST",
-        headers: {
-          accept: "*/*",
-          "Content-Type": "application/json",
-          authorization: token,
-        },
-        body: JSON.stringify(payload),
-      }
-    );
-
-    if (!uploadResponse.ok) {
-      const errorText = await uploadResponse.text();
-      console.error("Failed to upload images:", errorText);
-      return c.json(
-        { error: "Failed to upload images", details: errorText },
-        500
+      throw new Error(
+        `Failed to fetch rental due data: ${response.statusText}`
       );
     }
 
-    const responseData = await uploadResponse.json();
-    console.log("Images uploaded successfully");
-    return c.json(responseData);
-  } catch (error) {
-    console.error("Request failed:", error.message);
-    return c.json({ error: "Request failed", details: error.message }, 500);
-  }
-});
-
-app.post("/api/repairTicket", async (c) => {
-  const token = c.req.query("token");
-  if (!token) {
-    return c.json({ error: "Authorization token is required" }, 400);
-  }
-
-  const body = await c.req.json();
-  const { media1, media2, media3, media4, description, orderId, userId } = body;
-
-  const mediaUrls = [];
-  if (media1) mediaUrls.push(media1);
-  if (media2) mediaUrls.push(media2);
-  if (media3) mediaUrls.push(media3);
-  if (media4) mediaUrls.push(media4);
-
-  if (mediaUrls.length === 0) {
-    return c.json({ error: "At least one image URL is required" }, 400);
-  }
-
-  try {
-    // Upload images
-    const uploadResponse = await fetch(
-      baseurl + "/api/ServiceRequestImages/urlUpload",
-      {
-        method: "POST",
-        headers: {
-          accept: "*/*",
-          authorization: token,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ imageUrls: mediaUrls }),
-      }
-    );
-
-    if (!uploadResponse.ok) {
-      const errorText = await uploadResponse.text();
-      console.error("Failed to upload images:", errorText);
-      return c.json(
-        { error: "Failed to upload images", details: errorText },
-        uploadResponse.status
-      );
-    }
-
-    const uploadedImages = await uploadResponse.json();
-    console.log("Images uploaded successfully:", uploadedImages);
-
-    // Prepare images for ticket creation
-    const images = uploadedImages.map((img, index) => ({
-      url: img.url, // Assuming the response includes a `url` field
-      name: img.name, // Assuming the response includes a `name` field
-      userId: img.userId, // This value should be dynamically assigned or fetched if available
-      id: img.id, // Assuming the response includes an `id` field
-    }));
-
-    // Create ticket
-    const payload = {
-      data: [
-        {
-          requestType: 20,
-          images: images,
-          orderItemId: parseInt(orderId),
-          message: description,
-        },
-      ],
-    };
-
-    const ticketResponse = await fetch(
-      baseurl + "/api/Dashboards/createNewTickets",
-      {
-        method: "POST",
-        headers: {
-          authorization: token,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      }
-    );
-
-    if (!ticketResponse.ok) {
-      const errorText = await ticketResponse.text();
-      console.error("Failed to create ticket:", errorText);
-      return c.json(
-        { error: "Failed to create ticket", details: errorText },
-        ticketResponse.status
-      );
-    }
-
-    const ticketData = await ticketResponse.json();
-    console.log("Ticket created successfully:", ticketData);
-
+    const data = await response.json();
     return c.json({
-      uploadResponse: uploadedImages,
-      ticketResponse: ticketData,
+      type: "RentalDue",
+      data: {
+        pendingDuesText: data.pendingDuesText,
+        totalPendingRentalDueAmount: data.totalPendingRentalDueAmount,
+        totalPayableAmount: data.totalPayableAmount,
+        pendingLateFeeAmount: data.pendingLateFeeAmount,
+        rentoMoney: data.rentoMoney,
+      },
     });
-  } catch (error) {
-    console.error("Request failed:", error);
-    return c.json(
-      {
-        error: "Request failed",
-        details: error.message || "No details available",
-      },
-      500
-    );
-  }
-});
-
-app.post("/api/sendEmail", async (c) => {
-  const apiKey =
-    c.req.query("apiKey") || "79kzTYf3oNDNsnpX823232JYYAym1Ep43.bot9";
-
-  if (!apiKey) {
-    return c.json({ error: "ApiKey is required" }, 400);
   }
 
-  try {
-    const body = await c.req.json();
-    const {
-      userIds,
-      type,
-      name,
-      duplicateCheck,
-      ticketId,
-      customerId,
-      comment,
-    } = body;
-
-    // Ensure userIds is provided and format it into an array of integers
-    if (!userIds || typeof userIds !== "string") {
-      return c.json(
-        { error: "userIds must be provided as a comma-separated string" },
-        400
-      );
-    }
-
-    // Convert the comma-separated userIds string into an array of integers
-    const userIdsArray = userIds
-      .split(",")
-      .map((id) => parseInt(id.trim(), 10))
-      .filter((id) => !isNaN(id));
-
-    if (userIdsArray.length === 0 || !type) {
-      return c.json({ error: "Valid userIds and type are required" }, 400);
-    }
-
-    const channels = ["EMAIL"];
-    const variables = {
-      userId: customerId, // Assuming the first userId is to be used in variables
-      ticketId,
-      comment,
-    };
-
-    // Send email request
-    const emailResponse = await fetch(
-      `https://centercom.rentomojo.com/api/communications/key/send/bulk`,
-      {
-        method: "POST",
-        headers: {
-          ApiKey: apiKey,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          userIds: userIdsArray,
-          channels,
-          type,
-          name,
-          duplicateCheck,
-          variables,
-        }),
-      }
-    );
-
-    if (!emailResponse.ok) {
-      const errorText = await emailResponse.text();
-      console.error("Failed to send email:", errorText);
-      return c.json(
-        { error: "Failed to send email", details: errorText },
-        emailResponse.status
-      );
-    }
-
-    const emailData = await emailResponse.json();
-    console.log("Email sent successfully:", emailData);
-
-    return c.json(emailData);
-  } catch (error) {
-    console.error("Request failed:", error);
-    return c.json(
-      {
-        error: "Request failed",
-        details: error.message || "No details available",
-      },
-      500
-    );
-  }
-});
-
-app.get("/api/getPendingRentalItems", async (c) => {
-  const token = c.req.query("token");
-  const userId = c.req.query("userId");
-
-  if (!token) {
-    return c.json({ error: "Token is required" }, 400);
-  }
-
-  if (!userId) {
-    return c.json({ error: "UserId is required" }, 400);
-  }
-
-  try {
+  async function getPendingDues(c: any, token: string, userId: string) {
     const response = await fetch(
       baseurl + `/api/RMUsers/getPendingRentalItemsBreakUp?userId=${userId}`,
       {
@@ -971,134 +373,17 @@ app.get("/api/getPendingRentalItems", async (c) => {
     );
 
     if (!response.ok) {
-      console.log(response);
-      return c.json({ error: "Failed to fetch data" }, 500);
+      throw new Error(`Failed to fetch pending dues: ${response.statusText}`);
     }
 
-    const text = await response.text();
-
-    try {
-      const data = JSON.parse(text);
-      return c.json({ results: data });
-    } catch (error) {
-      return c.json({ error: "Failed to parse JSON response" }, 500);
-    }
-  } catch (error) {
-    return c.json({ error: "Request failed" }, 500);
-  }
-});
-
-app.post("/api/cssRescheduleTicket", async (c) => {
-  const token = c.req.query("token");
-
-  if (!token) {
-    return c.json({ error: "Authorization token is required" }, 400);
-  }
-
-  const body = await c.req.json();
-  const { serviceRequestId, preferredDate } = body;
-
-  if (!serviceRequestId || !preferredDate) {
-    return c.json(
-      { error: "serviceRequestId and preferredDate are required" },
-      400
-    );
-  }
-
-  try {
-    const response = await fetch(
-      baseurl + "/api/ServiceRequests/cssRescheduleTicket",
-      {
-        method: "POST",
-        headers: {
-          authorization: token,
-          "Content-Type": "application/json",
-          "chat-app": "bot9",
-        },
-        body: JSON.stringify({
-          data: {
-            serviceRequestId: serviceRequestId,
-            preferredDate: preferredDate,
-          },
-        }),
-      }
-    );
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("Failed to reschedule ticket:", errorText);
-      return c.json(
-        { error: "Failed to reschedule ticket", details: errorText },
-        500
-      );
-    }
-
-    const responseData = await response.json();
-    return c.json(responseData);
-  } catch (error) {
-    console.error("Request failed:", error.message);
-    return c.json({ error: "Request failed", details: error.message }, 500);
-  }
-});
-
-app.post("/api/bookCssSlot", async (c) => {
-  const token = c.req.query("token");
-
-  if (!token) {
-    return c.json({ error: "Authorization token is required" }, 400);
-  }
-
-  const body = await c.req.json();
-  const { serviceRequestId, taskDateTime } = body;
-
-  if (!serviceRequestId || !taskDateTime) {
-    return c.json(
-      { error: "serviceRequestId and taskDateTime are required" },
-      400
-    );
-  }
-
-  try {
-    const response = await fetch(baseurl + "/api/ServiceRequests/bookCssSlot", {
-      method: "POST",
-      headers: {
-        authorization: token,
-        "Content-Type": "application/json",
-        "chat-app": "bot9",
-      },
-      body: JSON.stringify({
-        data: {
-          serviceRequestId: serviceRequestId,
-          taskDateTime: taskDateTime,
-        },
-      }),
+    const data = await response.json();
+    return c.json({
+      type: "PendingDues",
+      data: data,
     });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("Failed to book CSS slot:", errorText);
-      return c.json(
-        { error: "Failed to book CSS slot", details: errorText },
-        500
-      );
-    }
-
-    const responseData = await response.json();
-    return c.json(responseData);
-  } catch (error) {
-    console.error("Request failed:", error.message);
-    return c.json({ error: "Request failed", details: error.message }, 500);
-  }
-});
-
-app.get("/api/getInvoices", async (c) => {
-  const token = c.req.query("token");
-
-  if (!token) {
-    return c.json({ error: "Token is required" }, 400);
   }
 
-  try {
+  async function getInvoices(c: any, token: string) {
     const response = await fetch(baseurl + `/api/Dashboards/getLedgersData`, {
       headers: {
         authorization: token,
@@ -1106,11 +391,10 @@ app.get("/api/getInvoices", async (c) => {
     });
 
     if (!response.ok) {
-      console.error("Failed to fetch data:", response.statusText);
-      return c.json({ error: "Failed to fetch data" }, 500);
+      throw new Error(`Failed to fetch invoices: ${response.statusText}`);
     }
-    const data = await response.json();
 
+    const data = await response.json();
     const formattedData = data.invoices.map((invoice) => ({
       id: invoice.id,
       createdAt: invoice.createdAt,
@@ -1121,26 +405,18 @@ app.get("/api/getInvoices", async (c) => {
       invoicePaidDate: invoice.invoicePaidDate,
     }));
 
-    return c.json({ invoices: formattedData });
-  } catch (error) {
-    console.error("Request failed:", error.message);
-    return c.json({ error: "Request failed", details: error.message }, 500);
-  }
-});
-
-app.post("/api/getUserLedgerInvoice", async (c) => {
-  const token = c.req.query("token");
-  const { invoiceId, userId } = await c.req.json();
-
-  if (!token) {
-    return c.json({ error: "Token is required" }, 400);
+    return c.json({
+      type: "Invoices",
+      data: { invoices: formattedData },
+    });
   }
 
-  if (!invoiceId || !userId) {
-    return c.json({ error: "invoiceId and userId are required" }, 400);
-  }
-
-  try {
+  async function getUserInvoice(
+    c: any,
+    token: string,
+    userId: string,
+    invoiceId: string
+  ) {
     const response = await fetch(
       baseurl +
         `/api/RMUsers/${userId}/getUserLedgerInvoice?invoiceId=${invoiceId}&discardGstInvoiceDateCheck=true`,
@@ -1179,54 +455,373 @@ app.post("/api/getUserLedgerInvoice", async (c) => {
     };
 
     return c.json(formattedData);
-  } catch (error) {
-    console.error("Request failed:", error.message);
-    return c.json({ error: "Request failed", details: error.message }, 500);
   }
 });
 
-app.get("/api/getRentalDue", async (c) => {
+// Service Management
+app.get("/api/orderServiceManagement", async (c: any) => {
   const token = c.req.query("token");
+  const operation = c.req.query("operation");
+
   if (!token) {
     return c.json({ error: "Token is required" }, 400);
   }
 
+  if (!operation) {
+    return c.json({ error: "Operation is required" }, 400);
+  }
+
   try {
-    const response = await fetch(baseurl + "/api/Dashboards/dashboardData", {
-      headers: {
-        accept: "application/json, text/plain, */*",
-        authorization: token,
-      },
-    });
-
-    if (!response.ok) {
-      console.error("Failed to fetch data:", response.statusText);
-      return c.json({ error: "Failed to fetch data" }, 500);
+    switch (operation) {
+      case "getServiceRequests":
+        return await getServiceRequests(c, token);
+      case "showServiceRequests":
+        return await showServiceRequests(c, token);
+      case "getKYCStatus":
+        return await getKYCStatus(c, token);
+      default:
+        return c.json({ error: "Invalid operation" }, 400);
     }
-
-    const data = await response.json();
-
-    const result = {
-      pendingDuesText: data.pendingDuesText,
-      totalPendingRentalDueAmount: data.totalPendingRentalDueAmount,
-      totalPayableAmount: data.totalPayableAmount,
-      pendingLateFeeAmount: data.pendingLateFeeAmount,
-      rentoMoney: data.rentoMoney,
-    };
-
-    return c.json(result);
   } catch (error) {
     console.error("Request failed:", error.message);
     return c.json({ error: "Request failed", details: error.message }, 500);
   }
 });
 
-app.post("/api/cancelServiceRequest", async (c) => {
+app.post("/api/orderServiceManagement", async (c: any) => {
   const token = c.req.query("token");
+  const operation = c.req.query("operation");
+
   if (!token) {
-    return c.json({ error: "Authorization token is required" }, 400);
+    return c.json({ error: "Token is required" }, 400);
   }
 
+  if (!operation) {
+    return c.json({ error: "Operation is required" }, 400);
+  }
+
+  try {
+    switch (operation) {
+      case "getDeliverySlots":
+        return await getDeliverySlots(c, token);
+      case "bookCssSlot":
+        return await bookCssSlot(c, token);
+      case "rescheduleRequest":
+        return await rescheduleRequest(c, token);
+      case "createRepairTicket":
+        return await createRepairTicket(c, token);
+      case "cancelServiceRequest":
+        return await cancelServiceRequest(c, token);
+      default:
+        return c.json({ error: "Invalid operation" }, 400);
+    }
+  } catch (error) {
+    console.error("Request failed:", error.message);
+    return c.json({ error: "Request failed", details: error.message }, 500);
+  }
+});
+
+async function getKYCStatus(c: any, token: string) {
+  try {
+    const response = await fetch(
+      baseurl + "/api/Hyperverges/completionStatusV3",
+      {
+        headers: {
+          accept: "application/json, text/plain, */*",
+          "accept-language": "en-GB,en-US;q=0.9,en;q=0.8,hi;q=0.7",
+          authorization: token,
+        },
+      }
+    );
+
+    if (!response.ok) {
+      console.log(response);
+      return c.json({ error: "Failed to fetch data" }, 500);
+    }
+
+    const text = await response.text();
+
+    try {
+      const data = JSON.parse(text);
+      const {
+        stepsCompleted,
+        totalSteps,
+        currentDocument,
+        evalResponse,
+        lastUpdatedAt,
+        professionType,
+      } = data;
+      let normalizedStatus = evalResponse.normalizedStatus;
+      let statusMap = evalResponse.statusMap;
+
+      const getStatusText = (statusMap, normalizedStatus) => {
+        for (let key in statusMap) {
+          if (statusMap[key].value === normalizedStatus) {
+            return statusMap[key].key;
+          }
+        }
+        return null;
+      };
+
+      const professionTypeMapping = {
+        100: "Working Professional",
+        200: "Self Employed",
+        300: "Freelancer",
+        500: "Student",
+        1337: "Not selected profession",
+        null: "Not selected profession",
+      };
+
+      let statusText = getStatusText(statusMap, normalizedStatus);
+      let profession = professionTypeMapping[professionType];
+
+      return c.json({
+        stepsCompleted,
+        totalSteps,
+        lastUpdatedAt,
+        currentDocument,
+        kycStatus: statusText,
+        professionType: profession,
+      });
+    } catch (error) {
+      return c.json({ error: "Failed to parse JSON response" }, 500);
+    }
+  } catch (error) {
+    return c.json({ error: "Request failed" }, 500);
+  }
+}
+
+async function getServiceRequests(c: any, token: string) {
+  const response = await fetch(
+    baseurl +
+      "/api/Dashboards/getServiceRequest?query=%7B%22page%22:1,%22size%22:100%7D&activeStatus=active",
+    {
+      headers: {
+        accept: "application/json, text/plain, */*",
+        authorization: token,
+        "chat-app": "bot9",
+      },
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch service requests: ${response.statusText}`);
+  }
+
+  const data = await response.json();
+  return c.json({ type: "ServiceRequests", data: data.results });
+}
+
+async function showServiceRequests(c: any, token: string) {
+  // This function might be similar to getServiceRequests, but with different formatting
+  // For this example, we'll use the same endpoint but format the data differently
+  const response = await fetch(
+    baseurl +
+      "/api/Dashboards/getServiceRequest?query=%7B%22page%22:1,%22size%22:100%7D&activeStatus=active",
+    {
+      headers: {
+        accept: "application/json, text/plain, */*",
+        authorization: token,
+        "chat-app": "bot9",
+      },
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch service requests: ${response.statusText}`);
+  }
+
+  const data = await response.json();
+  const formattedData = data.results.map((request: any) => ({
+    id: request.serviceRequestId,
+    type: request.requestType.label,
+    status: request.requestStatus.label,
+    createdAt: request.createdAt,
+  }));
+
+  return c.json({ type: "FormattedServiceRequests", data: formattedData });
+}
+
+async function getDeliverySlots(c: any, token: string) {
+  const body = await c.req.json();
+  const { orderUniqueId, requestType } = body;
+
+  if (!orderUniqueId || !requestType) {
+    return c.json({ error: "orderUniqueId and requestType are required" }, 400);
+  }
+
+  try {
+    const response = await fetch(baseurl + "/api/ServiceRequests/getCssSlots", {
+      method: "POST",
+      headers: {
+        authorization: token,
+        "Content-Type": "application/json",
+        "chat-app": "bot9",
+      },
+      body: JSON.stringify({
+        data: {
+          orderUniqueId: orderUniqueId,
+          requestType: requestType,
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.log("Failed to fetch data:", errorText);
+      return c.json({ error: "Failed to fetch data", details: errorText }, 500);
+    }
+
+    const text = await response.text();
+
+    try {
+      const data = JSON.parse(text);
+      return c.json({ results: data });
+    } catch (error) {
+      console.log("Failed to parse JSON response:", error.message);
+      return c.json(
+        { error: "Failed to parse JSON response", details: error.message },
+        500
+      );
+    }
+  } catch (error) {
+    console.log("Request failed:", error.message);
+    return c.json({ error: "Request failed", details: error.message }, 500);
+  }
+}
+
+async function bookCssSlot(c: any, token: string) {
+  const { serviceRequestId, taskDateTime } = await c.req.json();
+
+  if (!serviceRequestId || !taskDateTime) {
+    return c.json(
+      { error: "serviceRequestId and taskDateTime are required" },
+      400
+    );
+  }
+
+  const response = await fetch(baseurl + "/api/ServiceRequests/bookCssSlot", {
+    method: "POST",
+    headers: {
+      authorization: token,
+      "Content-Type": "application/json",
+      "chat-app": "bot9",
+    },
+    body: JSON.stringify({
+      data: {
+        serviceRequestId: serviceRequestId,
+        taskDateTime: taskDateTime,
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to book CSS slot: ${response.statusText}`);
+  }
+
+  const data = await response.json();
+  return c.json({ type: "BookedCssSlot", data: data });
+}
+
+async function rescheduleRequest(c: any, token: string) {
+  const { serviceRequestId, preferredDate } = await c.req.json();
+
+  if (!serviceRequestId || !preferredDate) {
+    return c.json(
+      { error: "serviceRequestId and preferredDate are required" },
+      400
+    );
+  }
+
+  const response = await fetch(
+    baseurl + "/api/ServiceRequests/cssRescheduleTicket",
+    {
+      method: "POST",
+      headers: {
+        authorization: token,
+        "Content-Type": "application/json",
+        "chat-app": "bot9",
+      },
+      body: JSON.stringify({
+        data: {
+          serviceRequestId: serviceRequestId,
+          preferredDate: preferredDate,
+        },
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Failed to reschedule request: ${response.statusText}`);
+  }
+
+  const data = await response.json();
+  return c.json({ type: "RescheduledRequest", data: data });
+}
+
+async function createRepairTicket(c: any, token: string) {
+  const { media1, media2, media3, media4, description, orderId } =
+    await c.req.json();
+
+  const mediaUrls = [media1, media2, media3, media4].filter(Boolean);
+
+  if (mediaUrls.length === 0) {
+    return c.json({ error: "At least one image URL is required" }, 400);
+  }
+
+  // Upload images
+  const uploadResponse = await fetch(
+    baseurl + "/api/ServiceRequestImages/urlUpload",
+    {
+      method: "POST",
+      headers: {
+        accept: "*/*",
+        authorization: token,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ imageUrls: mediaUrls }),
+    }
+  );
+
+  if (!uploadResponse.ok) {
+    throw new Error(`Failed to upload images: ${uploadResponse.statusText}`);
+  }
+
+  const uploadedImages = await uploadResponse.json();
+
+  // Create ticket
+  const ticketResponse = await fetch(
+    baseurl + "/api/Dashboards/createNewTickets",
+    {
+      method: "POST",
+      headers: {
+        authorization: token,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        data: [
+          {
+            requestType: 20,
+            images: uploadedImages,
+            orderItemId: parseInt(orderId),
+            message: description,
+          },
+        ],
+      }),
+    }
+  );
+
+  if (!ticketResponse.ok) {
+    throw new Error(
+      `Failed to create repair ticket: ${ticketResponse.statusText}`
+    );
+  }
+
+  const ticketData = await ticketResponse.json();
+  return c.json({ type: "CreatedRepairTicket", data: ticketData });
+}
+
+async function cancelServiceRequest(c: any, token: string) {
   try {
     const body = await c.req.json();
     const { serviceRequestId } = body;
@@ -1265,6 +860,89 @@ app.post("/api/cancelServiceRequest", async (c) => {
     console.error("Request failed:", error.message);
     return c.json({ error: "Request failed", details: error.message }, 500);
   }
+}
+
+// Product Inventory
+
+app.get("/api/productInventory", async (c: any) => {
+  const token = c.req.query("token");
+  const operation = c.req.query("operation");
+
+  if (!token) {
+    return c.json({ error: "Token is required" }, 400);
+  }
+
+  if (!operation) {
+    return c.json({ error: "Operation is required" }, 400);
+  }
+
+  try {
+    switch (operation) {
+      case "getActiveProductList":
+        return await getActiveProductList(c, token);
+      case "showActiveProducts":
+        return await showActiveProducts(c, token);
+      default:
+        return c.json({ error: "Invalid operation" }, 400);
+    }
+  } catch (error) {
+    console.error("Request failed:", error.message);
+    return c.json({ error: "Request failed", details: error.message }, 500);
+  }
 });
+
+async function getActiveProductList(c: any, token: string) {
+  const response = await fetch(baseurl + "/api/Dashboards/activeProductList", {
+    headers: {
+      accept: "application/json, text/plain, */*",
+      "accept-language": "en-GB,en;q=0.9",
+      authorization: token,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch active product list: ${response.statusText}`
+    );
+  }
+
+  const data = await response.json();
+  return c.json({ type: "ActiveProductList", data: data });
+}
+
+async function showActiveProducts(c: any, token: string) {
+  // This function will use the same endpoint as getActiveProductList,
+  // but will format the data differently for display purposes
+  const response = await fetch(baseurl + "/api/Dashboards/activeProductList", {
+    headers: {
+      accept: "application/json, text/plain, */*",
+      "accept-language": "en-GB,en;q=0.9",
+      authorization: token,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch active products: ${response.statusText}`);
+  }
+
+  const data = await response.json();
+
+  // Format the data for display
+  const formattedData = data.map((product: any) => ({
+    id: product.id,
+    name: product.productName,
+    category: product.category,
+    rentAmount: product.rentAmount,
+    tenure: product.tenure,
+    status: product.status,
+  }));
+
+  return c.json({
+    type: "FormattedActiveProducts",
+    data: formattedData,
+    message: "These are your active rented products.",
+    instruction: "Swipe or scroll to view all your active products.",
+  });
+}
 
 export default app;
