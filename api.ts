@@ -63,7 +63,7 @@ async function sendToSheety(c: any) {
     }
 
     const assignmentResponse = await fetch(
-      `http://localhost:3006/api/conversation/assignToAgent`,
+      `https://232f-119-82-108-182.ngrok-free.app/api/conversation/assignToAgent`,
       {
         method: "POST",
         headers: {
